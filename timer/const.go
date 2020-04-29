@@ -36,7 +36,7 @@ var TimeTaskMapFileValueTime = 60 //持久化储存数据，触发器，多少�
 var TimeTaskMapFileValueStore int32 = 100 //持久化储存数据，触发器 100个任务储存一次
 
 //log 记录配置
-var LogMode = 0
+var LogMode = 2	//log记录模式 1：显示器输出，2：文件记录模式，无记录
 var LogFilePath = "./operation.log"
 var LogMustFilePath = "./important.log"	//必须记录日志的文件
 var LogFileSuccess = ""

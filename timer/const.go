@@ -5,6 +5,8 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,9 +29,9 @@ var timeTaskMapFileValue = make(map[string]string) //持久化储存数据结构
 
 
 //持久化储存模式
-var timeTaskDBFile = "./.task.db"
+var timeTaskDBFile = GetAppPath()+"/.task.db"
 var timeTaskMapFileValueNumber int32 = 0 //持久化储存数据，计数器
-var timeTaskMapTimeoutExec time.Duration = 60 //超时任务重新执行的轮询间隔时间
+var timeTaskMapTimeoutExec time.Duration = 30 //超时任务重新执行的轮询间隔时间
 
 var TimeTaskMapFileValueMode = 0 //持久化储存模式 1：任务计数器模式，2：时间模式，默认时间模式
 var TimeTaskMapFileValueTime = 60 //持久化储存数据，触发器，多少秒执行一次
@@ -37,9 +39,9 @@ var TimeTaskMapFileValueStore int32 = 100 //持久化储存数据，触发器 10
 
 //log 记录配置
 var LogMode = 2	//log记录模式 1：显示器输出，2：文件记录模式，无记录
-var LogFilePath = "./operation.log"
-var LogMustFilePath = "./important.log"	//必须记录日志的文件
-var LogFileSuccess = ""
+var LogFilePath = GetAppPath()+"/operation.log"		//异常记录日志
+var LogMustFilePath = GetAppPath()+"/important.log"	//必须记录日志的文件
+var LogFileSuccess = ""					//成功日志
 
 type LogChanTemplate struct {
 	FileName string
@@ -67,6 +69,13 @@ func (this *timeTaskMapTemplate) Read(key string) []*Timer {
 	}
 	Lock.Unlock()
 	return SliceStr
+}
+
+func GetAppPath() string {
+	file, _ := exec.LookPath(os.Args[0])
+	path, _ := filepath.Abs(file)
+	index := strings.LastIndex(path, string(os.PathSeparator))
+	return path[:index]
 }
 
 //文件储存自检器
@@ -287,80 +296,33 @@ func TimeTask() {
 
 	}()
 
+	//超时任务重新管道通信，立即执行 ,不会重新记录防止无限执行
 	go func() {
-		//协程任务调度器
+
 		for Record := range TimeChan{
+			var data string
+			var err error
 
-			date := Record.GetParam(AGREE_PARAMS_TIMING)
-			//解析日期比较时间轴
-			year,month,day,hour,min,sec := NumberDateAnalysis(date)
-			t := time.Date(year,time.Month(month),day,hour,min,sec,0,time.Local)
-			waitTime := t.Unix()-time.Now().Unix()
-
-			//如果已经超时直接执行
-			if waitTime < 1 {
-				go func() {
-					var data string
-					var err error
-
-					//任务执行地
-					var channel = new(Channel)
-					if err := channel.Run(Record); err != nil {
-						DebugLog(Record.Str+":"+err.Error(),false)
-						TimeTaskMap.Write(Record.GetParam(AGREE_PARAMS_TIMING),Record)
-						return
-					}
-
-					if data,err = channel.Server.Shell(Record.GetParam(AGREE_PARAMS_CMD)); err != nil {
-						DebugLog(Record.Str+":"+err.Error(),false)
-						TimeTaskMap.Write(Record.GetParam(AGREE_PARAMS_TIMING),Record)
-						return
-					}
-
-					data = strings.ReplaceAll(data,"\r","")
-					data = strings.ReplaceAll(data,"\t","")
-					data = strings.ReplaceAll(data,"\n","")
-					if LogFileSuccess != "" {
-						LogChan <- LogChanTemplate{FileName:LogFileSuccess,Content:data+"\n"}
-					}
-					channel.Server.Close()
-					atomic.AddInt32(&GoTaskNumber,-1)
-				}()
+			//任务执行地
+			var channel = new(Channel)
+			if err := channel.Run(Record); err != nil {
+				DebugLog("[run]Shell: "+Record.Str+";Error: "+err.Error(),true)
 				continue
 			}
 
-			//开始调度协程任务
-			timer := time.NewTimer(time.Second * time.Duration(waitTime))
-			go func() {
-				select {
-				case <- timer.C:
-					var data string
-					var err error
+			if data,err = channel.Server.Shell(Record.GetParam(AGREE_PARAMS_CMD)); err != nil {
+				DebugLog("[shell]Shell: "+Record.Str+";Error: "+err.Error(),true)
+				continue
+			}
 
-					//任务执行地
-					var channel = new(Channel)
-					if err := channel.Run(Record); err != nil {
-						DebugLog(Record.Str+":"+err.Error(),false)
-						TimeTaskMap.Write(Record.GetParam(AGREE_PARAMS_TIMING),Record)
-						return
-					}
-
-					if data,err = channel.Server.Shell(Record.GetParam(AGREE_PARAMS_CMD)); err != nil {
-						DebugLog(Record.Str+":"+err.Error(),false)
-						TimeTaskMap.Write(Record.GetParam(AGREE_PARAMS_TIMING),Record)
-						return
-					}
-
-					data = strings.ReplaceAll(data,"\r","")
-					data = strings.ReplaceAll(data,"\t","")
-					data = strings.ReplaceAll(data,"\n","")
-					if LogFileSuccess != "" {
-						LogChan <- LogChanTemplate{FileName:LogFileSuccess,Content:data+"\n"}
-					}
-					channel.Server.Close()
-					atomic.AddInt32(&GoTaskNumber,-1)
-				}
-			}()
+			data = strings.ReplaceAll(data,"\r","")
+			data = strings.ReplaceAll(data,"\t","")
+			data = strings.ReplaceAll(data,"\n","")
+			if LogFileSuccess != "" {
+				LogChan <- LogChanTemplate{FileName:LogFileSuccess,Content:data+"\n"}
+			}
+			channel.Server.Close()
+			atomic.AddInt32(&GoTaskNumber,-1)
 
 		}
 	}()

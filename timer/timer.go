@@ -22,10 +22,6 @@ func (this *Timer) AnalysisParams(str string) error {
 		AGREE_PARAMS_CMD:"",
 	}
 
-	str = strings.ReplaceAll(str,"\r","")
-	str = strings.ReplaceAll(str,"\t","")
-	str = strings.ReplaceAll(str,"\n","")
-
 	this.Str = str
 	linuxShell = strings.Fields(str)
 

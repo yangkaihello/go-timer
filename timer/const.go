@@ -27,7 +27,7 @@ var timeTaskMapFileValue = make(map[string]string) //持久化储存数据结构
 
 
 //持久化储存模式
-var timeTaskDBFile = "./task.db"
+var timeTaskDBFile = "./.task.db"
 var timeTaskMapFileValueNumber int32 = 0 //持久化储存数据，计数器
 var timeTaskMapTimeoutExec time.Duration = 60 //超时任务重新执行的轮询间隔时间
 

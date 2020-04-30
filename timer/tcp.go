@@ -115,8 +115,8 @@ func Status(ReadString string,conn net.Conn) {
 		"task.number": strconv.Itoa(int(GoTaskNumber)),
 		"task.date.number": strings.Trim(taskDateNumber,","),
 	}
-	var ReadSlice = strings.Split(ReadString,":")
 
+	var ReadSlice = strings.Split(ReadString,":")
 	if len(ReadSlice) == 2 { //判断客户端是否想要获取一个状态
 
 		if d,ok := status[ReadSlice[1]]; ok { //判断是否是一个允许访问的状态

@@ -10,23 +10,18 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
 const AGREE_PARAMS_TIMING = "-t"
 const AGREE_PARAMS_CMD = "--CMD"
 
-
-type timeTaskMapTemplate map[string][]*Timer
-
 var TimeChan = make(chan *Timer)	//协程任务调度器,常驻内存重启丢失
 var GoTaskNumber int32 = 0	//协程任务,计数器
 
 //轮询定时器
 var TimeTaskMap = make(timeTaskMapTemplate)	//时间任务调度器，零时存放在内存中，通过 TimeTaskMapFileValueStore | TimeTaskMapFileValueTime 来控制持久储存
-var timeTaskMapFileValue = make(map[string]string) //持久化储存数据结构
-
+var timeTaskNumber = map[string]int{}	//每秒钟最大任务数量计数方便删除其中的任务
 
 //持久化储存模式
 var timeTaskDBFile = GetAppPath()+"/.task.db"
@@ -43,32 +38,97 @@ var LogFilePath = GetAppPath()+"/operation.log"		//异常记录日志
 var LogMustFilePath = GetAppPath()+"/important.log"	//必须记录日志的文件
 var LogFileSuccess = ""					//成功日志
 
+var LogChan = make(chan LogChanTemplate)
+var Lock sync.Mutex
+
+//log 记录的协程通信模版
 type LogChanTemplate struct {
 	FileName string
 	Content string
 }
-var LogChan = make(chan LogChanTemplate)
-var Lock sync.Mutex
 
-func (this *timeTaskMapTemplate) Write(key string,value *Timer) {
+//timer 数据结构模型
+type timeTaskMapTemplate map[string]map[int]*Timer
+
+//写入每秒钟的任务
+func (this *timeTaskMapTemplate) Write(key string,value *Timer) int {
 	Lock.Lock()
-	(*this)[key] = append((*this)[key], value)
-	timeTaskMapFileValue[key] += value.Str+"\n"
+	defer Lock.Unlock()
+	timeTaskNumber[key]++
+	if _,ok := (*this)[key]; !ok {
+		(*this)[key] = map[int]*Timer{}
+	}
+	(*this)[key][timeTaskNumber[key]] = value
+
+	//记录操作任务的数量
 	timeTaskMapFileValueNumber++
-	Lock.Unlock()
+	GoTaskNumber++
+	return timeTaskNumber[key]
 }
 
-func (this *timeTaskMapTemplate) Read(key string) []*Timer {
+//正常的读取数据
+func (this *timeTaskMapTemplate) Read(key string) map[int]*Timer {
 	Lock.Lock()
-	var SliceStr []*Timer
-	var ok bool
-	if SliceStr,ok = (*this)[key];ok {
-		delete(timeTaskMapFileValue,key)
-		delete(*this,key)
-		timeTaskMapFileValueNumber = timeTaskMapFileValueNumber+int32(len(SliceStr))
+	defer Lock.Unlock()
+	var SliceStr map[int]*Timer
+
+	if _,ok := (*this)[key]; ok {
+		SliceStr = (*this)[key]
 	}
-	Lock.Unlock()
+
 	return SliceStr
+}
+
+//读取每秒钟的任务，并清空本次读取的数据
+func (this *timeTaskMapTemplate) ReadDelete(key string) map[int]*Timer {
+	Lock.Lock()
+	defer Lock.Unlock()
+	var SliceStr map[int]*Timer
+
+	if _,ok := (*this)[key]; ok {
+		SliceStr = (*this)[key]
+		delete((*this),key)
+		timeTaskMapFileValueNumber += int32(len(SliceStr))
+		GoTaskNumber -= int32(len(SliceStr))
+	}
+
+	return SliceStr
+}
+
+//删除任务
+func (this *timeTaskMapTemplate) Delete(key string,id int) bool {
+	Lock.Lock()
+	defer Lock.Unlock()
+	if _,ok := (*this)[key][id]; ok {
+		delete((*this)[key],id)
+	}else{
+		return false
+	}
+
+	//数据清空的时候,删除统计任务数量的自增ID
+	if _,ok := (*this)[key]; !ok || len((*this)[key]) == 0 {
+		if  _,ok2 := timeTaskNumber[key]; ok2{
+			delete(timeTaskNumber,key)
+			delete((*this),key)
+		}
+	}
+
+	//记录操作任务的数量
+	timeTaskMapFileValueNumber++
+	GoTaskNumber--
+	return true
+}
+
+//任务重新载入方式
+func (this *timeTaskMapTemplate) remakeWrite(key string,number int,value *Timer) {
+	if timeTaskNumber[key] < number {
+		timeTaskNumber[key] = number
+	}
+	if _,ok := (*this)[key]; !ok {
+		(*this)[key] = map[int]*Timer{}
+	}
+	(*this)[key][number] = value
+	GoTaskNumber++
 }
 
 func GetAppPath() string {
@@ -81,8 +141,11 @@ func GetAppPath() string {
 //文件储存自检器
 func fileValue()  {
 	var buf = new(bytes.Buffer)
-	for _,v := range timeTaskMapFileValue {
-		buf.WriteString(v)
+	var tasks = TimeTaskMap
+	for _,task := range tasks {
+		for k,v := range task {
+			buf.WriteString(strconv.Itoa(k)+string(0x19)+v.Str+"\n")
+		}
 	}
 	ioutil.WriteFile(timeTaskDBFile,buf.Bytes(),os.ModePerm)
 }
@@ -104,10 +167,13 @@ func FileValueReader() error {
 		if v == "" {
 			continue
 		}
+
+		task := strings.Split(v,string(0x19))
+		taskNumber,_ := strconv.Atoi(task[0])
 		var timer = new(Timer)
-		err = timer.AnalysisParams(v)
-		TimeTaskMap.Write(timer.GetParam(AGREE_PARAMS_TIMING),timer)
-		atomic.AddInt32(&GoTaskNumber,1)
+		err = timer.AnalysisParams(task[1])
+		TimeTaskMap.remakeWrite(timer.GetParam(AGREE_PARAMS_TIMING),taskNumber,timer)
+
 	}
 	return err
 }
@@ -217,7 +283,7 @@ func TimeTask() {
 			switch TimeTaskMapFileValueMode {
 			case 1:
 				if timeTaskMapFileValueNumber >= TimeTaskMapFileValueStore ||
-					len(timeTaskMapFileValue) == 0 {
+					len(TimeTaskMap) == 0 {
 					fileValue()
 					timeTaskMapFileValueNumber=0
 				}
@@ -244,7 +310,7 @@ func TimeTask() {
 			var date = NumberDate()
 			for k,_ := range TimeTaskMap {
 				if k < date {
-					for _,task := range TimeTaskMap.Read(k) {
+					for _,task := range TimeTaskMap.ReadDelete(k) {
 						TimeChan <- task
 					}
 				}
@@ -259,39 +325,40 @@ func TimeTask() {
 
 		for  {
 			datetime := NumberDate()
-			data := TimeTaskMap.Read(datetime)
-			if data != nil{
-				for _,Record := range data {
-					go func() {
+			tasks := TimeTaskMap.ReadDelete(datetime)
+
+			if len(tasks) != 0 {
+				go func() {
+					for id,Record := range tasks {
 						var data string
 						var err error
 
 						//任务执行地
 						var channel = new(Channel)
 						if err := channel.Run(Record); err != nil {
-							DebugLog(Record.Str+":"+err.Error(),false)
-							TimeTaskMap.Write(Record.GetParam(AGREE_PARAMS_TIMING),Record)
-							return
+							TimeTaskMap.remakeWrite(datetime,id,Record)
+							DebugLog(Record.Str+":"+strconv.Itoa(id)+"; "+err.Error(),false)
+							continue
 						}
 
 						if data,err = channel.Server.Shell(Record.GetParam(AGREE_PARAMS_CMD)); err != nil {
-							DebugLog(Record.Str+":"+err.Error(),false)
-							TimeTaskMap.Write(Record.GetParam(AGREE_PARAMS_TIMING),Record)
-							return
+							TimeTaskMap.remakeWrite(datetime,id,Record)
+							DebugLog(Record.Str+":"+strconv.Itoa(id)+"; "+err.Error(),false)
+							continue
 						}
 
-						data = strings.ReplaceAll(data,"\r","")
-						data = strings.ReplaceAll(data,"\t","")
-						data = strings.ReplaceAll(data,"\n","")
+						data = strings.Trim(data,"\n")
+						data = strings.Trim(data,"\r")
 						if LogFileSuccess != "" {
 							LogChan <- LogChanTemplate{FileName:LogFileSuccess,Content:data+"\n"}
 						}
+						//执行完成代理任务就清除任务以及关闭服务器
 						channel.Server.Close()
-						atomic.AddInt32(&GoTaskNumber,-1)
-					}()
-				}
+					}
+				}()
 			}
-			time.Sleep(time.Millisecond*500)
+
+			time.Sleep(time.Second*1)
 		}
 
 	}()
@@ -315,14 +382,12 @@ func TimeTask() {
 				continue
 			}
 
-			data = strings.ReplaceAll(data,"\r","")
-			data = strings.ReplaceAll(data,"\t","")
-			data = strings.ReplaceAll(data,"\n","")
+			data = strings.Trim(data,"\n")
+			data = strings.Trim(data,"\r")
 			if LogFileSuccess != "" {
 				LogChan <- LogChanTemplate{FileName:LogFileSuccess,Content:data+"\n"}
 			}
 			channel.Server.Close()
-			atomic.AddInt32(&GoTaskNumber,-1)
 
 		}
 	}()

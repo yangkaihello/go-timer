@@ -5,6 +5,8 @@ import (
 	"log"
 )
 
+var testMap = map[string]int{}
+
 func main()  {
 
 	log.Println("Start app path:"+timer.GetAppPath())

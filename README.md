@@ -1,3 +1,7 @@
+# 扩展包
+php 调取go-timer 扩展.通过composer 搜索server-timer [https://github.com/yangkaihello/server-timer](https://github.com/yangkaihello/server-timer "php 调取go-timer 扩展")
+
+
 # go-timer
 go 的任务调度器可以代理执行本地服务器的脚本 如下是一个任务开启的方式 
 
@@ -48,4 +52,3 @@ log.Print(ByteReader.ReadString('\n'))
 //关闭连接
 conn.Close()
 ```
-

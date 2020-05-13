@@ -7,7 +7,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 )
 
@@ -55,7 +54,7 @@ func (this *TCPTask) Accept() {
 
 }
 
-
+//tcp 通信协议过程
 func (this *TCPTask) addressReader(conn net.Conn) {
 	//初始化单线程全局变量
 	var err error
@@ -78,8 +77,13 @@ func (this *TCPTask) addressReader(conn net.Conn) {
 	ReadString = strings.ReplaceAll(ReadString,"\r","")
 	ReadString = strings.ReplaceAll(ReadString,"\n","")
 
+	//额外的字符串操作
 	if len(ReadString) > 5 && ReadString[0:6] == "status" {
 		go Status(ReadString,conn);return
+	} else if len(ReadString) > 5 && ReadString[0:6] == "delete" {
+		go Delete(ReadString,conn);return
+	} else if len(ReadString) > 5 && ReadString[0:6] == "record" {
+		go Record(ReadString,conn);return
 	}
 
 	//root@localhost -t=20200424135100 --CMD="ls"
@@ -99,24 +103,29 @@ func (this *TCPTask) addressReader(conn net.Conn) {
 	}
 
 	TimeTaskMap.Write(timer.Params[AGREE_PARAMS_TIMING],timer)
-	atomic.AddInt32(&GoTaskNumber,1)
 	Close("已经加入等待队列")
 
 }
 
+const SPLIT_SEARCH = 0x3A 	//参数和数据的区分
+const SPLIT_KEYS = 0x2E		//参数的类型区分
+const SPLIT_VALUE = 0x2C	//内容的数据区分
+const SPLIT_VALUES = 0x7C	//内容中的多个数据区分
+const SPLIT_KEY_VALUES_EQ = 0x3D //确认key value 关系的符号
+
 func Status(ReadString string,conn net.Conn) {
 	//每个时间段的任务量统计
-	var taskDateNumber string
+	var taskDateNumber []string
 	for k,v := range TimeTaskMap {
-		taskDateNumber += k+"="+strconv.Itoa(len(v))+","
+		taskDateNumber = append(taskDateNumber, k+string(SPLIT_KEY_VALUES_EQ)+strconv.Itoa(len(v)))
 	}
 
 	var status = map[string]string{
 		"task.number": strconv.Itoa(int(GoTaskNumber)),
-		"task.date.number": strings.Trim(taskDateNumber,","),
+		"task.date.number": strings.Join(taskDateNumber,string(SPLIT_VALUE)),
 	}
 
-	var ReadSlice = strings.Split(ReadString,":")
+	var ReadSlice = strings.Split(ReadString,string(SPLIT_SEARCH))
 	if len(ReadSlice) == 2 { //判断客户端是否想要获取一个状态
 
 		if d,ok := status[ReadSlice[1]]; ok { //判断是否是一个允许访问的状态
@@ -129,9 +138,71 @@ func Status(ReadString string,conn net.Conn) {
 	var message string
 	//最终结构
 	for k,v := range status {
-		message += k+":"+v+"\n"
+		message += k+string(SPLIT_SEARCH)+v+"\n"
 	}
 
 	conn.Write([]byte(message))
+	conn.Close()
+}
+
+//查看任务的ID
+func Record(ReadString string,conn net.Conn) {
+
+	var message []string
+	var ids []string
+	var ReadSlice = strings.Split(ReadString,string(SPLIT_SEARCH))
+
+	if len(ReadSlice) == 2 { //判断客户端是否想要获取一个状态
+
+		//查看任务队列的数据结构
+		if ReadSlice[1] == "all" {
+			for date,tasks := range TimeTaskMap {
+				for id,_ := range tasks {
+					ids = append(ids, strconv.Itoa(id))
+				}
+				message = append(message, date+string(SPLIT_KEY_VALUES_EQ)+strings.Join(ids,string(SPLIT_VALUES)))
+				ids = []string{}
+			}
+		}else if tasks := TimeTaskMap.Read(ReadSlice[1]); len(tasks) != 0 {
+			for id,_ := range tasks {
+				ids = append(ids, strconv.Itoa(id))
+			}
+			message = append(message, ReadSlice[1]+string(SPLIT_KEY_VALUES_EQ)+strings.Join(ids,string(SPLIT_VALUES)))
+		}
+
+	}
+
+	//给用户返回删除的数量
+	conn.Write([]byte(strings.Join(message,string(SPLIT_VALUE))+"\n"))
+	conn.Close()
+
+}
+
+//清除任务队列
+func Delete(ReadString string,conn net.Conn) {
+	var message string
+	var ReadSlice = strings.Split(ReadString,string(SPLIT_SEARCH))
+	if len(ReadSlice) == 2 { //判断客户端是否想要获取一个状态
+		//对于的数据键删除
+		keys := strings.Split(ReadSlice[1],string(SPLIT_KEYS))
+
+		if len(keys) == 1 {
+			tasks := TimeTaskMap.ReadDelete(keys[0])
+			message = strconv.Itoa(len(tasks))
+		} else if len(keys) == 2 {
+			//确认第二参数是正确的
+			if number,err := strconv.Atoi(keys[1]); err == nil{
+				if TimeTaskMap.Delete(keys[0],number) {
+					message = "1"
+				}else{
+					message = "0"
+				}
+			}
+		}
+
+	}
+
+	//给用户返回删除的数量
+	conn.Write([]byte(message+"\n"))
 	conn.Close()
 }
